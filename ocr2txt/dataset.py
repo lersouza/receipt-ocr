@@ -1,0 +1,202 @@
+from functools import partial
+import json
+import os
+import string
+
+from pathlib import Path
+from random import choice, choices, randint, random
+from typing import List, Tuple
+
+from datasets import load_dataset
+from PIL import Image, ImageDraw, ImageFont
+from datasets.utils.file_utils import temp_seed
+from tqdm import tqdm
+
+from multiprocessing import Pool
+
+# wiki = load_dataset('wikitext', 'wikitext-103-v1', split='train')
+
+BACK_COLORS = ['#FFFFFF', '#F3C76E', '#B6BAB6', '#E7DEBE', '#ECE3D6']
+FONT_COLORS = ['#000000', '#070138']
+
+KNOW_CHARACTERS = string.ascii_letters + string.digits
+
+
+def list_available_fonts(fonts_path: str,
+                         sizes_range: range = None,
+                         return_type: str = 'image_font'):
+    """
+    Lists a combination of (font, color) for all available fonts in `font_path`
+    and sizes in `sizes_range`.
+
+    If `sizes_range` is not specified, we assume a range from 16 to 22.
+
+    It is also possible to control how the data is returned:
+    - If return_type is equals to `'image_font'` (default), the resulting list will
+      contain objects of type `ImageFont`.
+
+    - Otherwise, it will be a list of strings in the format
+      `'font name, font size'` will be returned.
+    """
+    available_fonts = list(Path(fonts_path).glob('**/*.ttf'))
+    available_sizes = range(16, 22) if sizes_range is None else sizes_range
+
+    def create_font(font_name: str, font_size: int):
+        if return_type == 'image_font':
+            return ImageFont.truetype(str(font_name), int(font_size))
+
+        return f'{font_name}, {font_size}'
+
+    all_available = sum([[create_font(f, s) for f in available_fonts]
+                         for s in available_sizes], [])
+
+    return all_available
+
+
+def calculate_x(image_width, text_width, alignment):
+    if alignment == 'center':
+        return (image_width - text_width) / 2
+    elif alignment == 'right':
+        return (image_width - text_width)
+    else:
+        return 0
+
+
+def fit_text(tokens: List[str],
+             draw: ImageDraw.Draw,
+             font: ImageFont,
+             max_width: int,
+             max_height: int,
+             offset_x: int = 0,
+             offset_y: int = 0,
+             line_spacing: int = 0,
+             max_height_threshold: int = 20):
+    """
+    Fits the given `tokens` array into many lines based on
+    `draw`, `font` and desired `max_width` and `max_height`.
+
+    This function returns a tuple:
+    - `[0]`: Is a list of lines in the images. For each line, a list of tokens \
+             is provided (as a result of `line.split()`).
+    - `[1]`: A list of width for each line.
+    - `[2]`: The initial position where the tokens do not fit anymore.
+
+    A `offset_x` and `offset_y` can be provided.
+    Also, an additional space between lines can be provided in `line_spacing`.
+
+    PS: The calculations are based on estimations returned by `draw.textsize()`.
+    """
+    lines = [[]]
+    sizes = [[offset_x, 0]]
+    unfit = None
+
+    total_height = offset_y
+
+    for i, token in enumerate(tokens):
+        # we include spaces for size calculation, since we are
+        # running through tokens
+        text_to_draw = token + ' '
+        w, h = draw.textsize(text_to_draw, font=font)
+
+        estimated_height = (total_height + h + line_spacing + \
+                            max_height_threshold)
+
+        if sizes[-1][0] + w > max_width:
+            lines.append([])
+            sizes.append([offset_x, h])
+
+            total_height = sum([i[1] for i in sizes]) + offset_y
+
+        if estimated_height >= max_height:  # put some bottom margin
+            unfit = i
+            break
+
+        lines[-1].append(token)
+        sizes[-1][0] += w
+        sizes[-1][1] = max(h, sizes[-1][1])
+        
+    return lines, sizes, unfit
+
+
+def generate_random_string(min_size: int = 3, max_size: int = 10):
+    """
+    Generates a random string of size between `min_size` and `max_size`.
+    """ 
+    return ''.join(choices(KNOW_CHARACTERS, k=randint(min_size, max_size)))
+
+
+def create_image(size: Tuple[int, int] = (300, 600)) -> Image:
+    """
+    Creates an image of of size `size`, in RGB scheme.
+    The image's background color is chosen at random from `BACK_COLORS`.
+    """
+    backround_color = choice(BACK_COLORS)
+    image = Image.new('RGB', size, color=backround_color)
+
+    return image
+
+
+def replaceit_or_leaveit(original):
+    if random() > 0.95:
+        return generate_random_string()
+
+    return original
+
+
+def generate_image_from_text(image_data: Tuple[int, str]):
+    image_index, text = image_data
+    size = (300, 600)
+    fonts = list_available_fonts('./fonts')
+    image_name = f'./output/{image_index}.png'  
+    image = create_image(size)
+    draw = ImageDraw.Draw(image)
+    font = choice(fonts)
+    forecolor = choice(FONT_COLORS)
+    line_spacing = randint(0, 10)
+
+    offset_x = randint(0, size[0] // 2)
+    offset_y = randint(0, size[1] // 2)
+
+    original = text.split()
+    tokens = [replaceit_or_leaveit(t) for t in original]
+
+    lines, sizes, unfit = fit_text(
+        tokens,
+        draw,
+        font,
+        size[0],
+        size[1],
+        offset_x=offset_x,
+        offset_y=offset_y,
+        line_spacing=line_spacing)
+
+    original, tokens = original[:unfit], tokens[:unfit]
+    y = offset_y
+
+    for line, text_size in zip(lines, sizes):
+        draw.text((offset_x, y), ' '.join(line), font=font, fill=forecolor)
+        y += text_size[1] + line_spacing
+
+    image.save(image_name)
+
+    with open(f'{image_name}.json', 'w+') as labels:
+        json.dump(
+            {
+                'original': ' '.join(original),
+                'image': ' '.join(tokens)
+            }, 
+            labels)
+   
+if __name__ == '__main__':
+    os.makedirs('./output', exist_ok=True)
+
+    wiki = load_dataset('wikitext', 'wikitext-103-v1', split='train')
+    wiki = wiki.filter(lambda example: len(example['text']) >= 128)
+    wiki_data = wiki[:100_000]['text']
+
+    with Pool(processes=2) as p:
+        it = p.imap_unordered(generate_image_from_text, enumerate(wiki_data))
+
+        with tqdm(total=len(wiki_data)) as pbar:
+            for _ in it:
+                pbar.update()
