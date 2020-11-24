@@ -1,6 +1,7 @@
 .vscode/settings.json
 .venv
 output/
+.azureml/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -6,3 +6,4 @@ datasets==1.1.2
 pillow
 spacy
 efficientnet_pytorch
+azureml-sdk
