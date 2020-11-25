@@ -95,7 +95,7 @@ class UNet(nn.Module):
         self.up4 = UNetUpBlock(128, 64)
 
         # ---> Classifier
-        self.out = nn.Conv2d(6, self.out_classes, kernel_size=1)
+        self.out = nn.Conv2d(64, self.out_classes, kernel_size=1)
 
     def forward(self, image):
         x1 = self.inc(image)
